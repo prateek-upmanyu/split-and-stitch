@@ -102,7 +102,7 @@ function setupDropzones() {
           videoFilename.textContent = `${file.name} (${dur.toFixed(1)}s)`;
         }
       };
-      videoThumb.play().catch(() => {});
+      // videoThumb.play().catch(() => {});
       videoFilename.textContent = file.name;
       videoPlaceholder.hidden = true;
       videoPreviewWrap.hidden = false;
