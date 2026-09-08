@@ -110,13 +110,7 @@ function setupDropzones() {
   });
 
   // Character drop & change
-  function setCharacterPreview(fileOrBlob, dataUrl, filename) {
-    activeCharacterFile = fileOrBlob;
-    charThumb.src = dataUrl;
-    charFilename.textContent = filename || "Saved Profile Face";
-    charPlaceholder.hidden = true;
-    charPreviewWrap.hidden = false;
-    }
+
 
   charInput.addEventListener('change', e => {
     const file = e.target.files[0];
@@ -532,4 +526,5 @@ document.getElementById('remove-char-btn').addEventListener('click', (e) => {
     document.getElementById('character-placeholder').hidden = false;
     document.getElementById('character-preview-wrap').hidden = true;
 });
+
 
