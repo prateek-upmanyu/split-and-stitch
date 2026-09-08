@@ -505,10 +505,17 @@ function setVideoPreview(file, dataUrl, filename) {
 }
 
 function setCharacterPreview(file, dataUrl, filename) {
+    // 1. Update UI
+    document.getElementById('character-thumb').src = dataUrl;
+    document.getElementById('character-filename').textContent = filename || "Saved Profile Face";
+    document.getElementById('character-placeholder').hidden = true;
+    document.getElementById('character-preview-wrap').hidden = false;
+
+    // 2. Attach to the hidden HTML form properly without infinite loops
+    const input = document.getElementById('character-input');
     const dt = new DataTransfer();
     dt.items.add(file);
-    $('character-input').files = dt.files;
-    $('character-input').dispatchEvent(new Event('change'));
+    input.files = dt.files;
 }
 document.getElementById('remove-video-btn').addEventListener('click', (e) => {
     e.stopPropagation();
