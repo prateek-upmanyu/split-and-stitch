@@ -35,7 +35,10 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw
 
-from .settings import ROOT, settings
+try:
+    from settings import ROOT, settings
+except ImportError:
+    from .settings import ROOT, settings
 
 app = FastAPI(title="Split & Stitch API")
 app.add_middleware(
