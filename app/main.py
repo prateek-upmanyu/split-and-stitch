@@ -9,8 +9,13 @@ import time
 import uuid
 from pathlib import Path
 
-async def upload_to_cdn(filepath: Path) -> str:
+async def upload_to_cdn(filepath: Path | str) -> str:
     import httpx, re
+    if isinstance(filepath, str) and (filepath.startswith("http://") or filepath.startswith("https://")):
+        return filepath
+    if not filepath or not Path(filepath).exists():
+        raise RuntimeError("File to upload does not exist.")
+
     async with httpx.AsyncClient(timeout=120.0) as client:
         with open(filepath, "rb") as f:
             resp = await client.post("https://tmpfiles.org/api/v1/upload", files={"file": f})
@@ -21,7 +26,7 @@ async def upload_to_cdn(filepath: Path) -> str:
         match = re.search(r'href="(https://tmpfiles\.org/dl/.*?)"', html_resp.text)
         if match:
             return match.group(1)
-        raise RuntimeError("Failed to extract direct link from tmpfiles CDN")
+        return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
 
 from typing import Any
 
@@ -352,29 +357,8 @@ def create_watermark(path: Path):
     return path
 
 def restore_audio_and_mux(source_video: Path | None, stitched_video: Path, final_output: Path) -> Path:
-    """Muxes audio without watermark."""
+    """Muxes audio from original source onto stitched video."""
     if not source_video or not source_video.exists():
-        run("ffmpeg", "-y", "-i", str(stitched_video), "-c:v", "copy", str(final_output))
-        return final_output
-
-    try:
-        meta = probe(source_video)
-        if meta.get("has_audio"):
-            run(
-                "ffmpeg", "-y",
-                "-i", str(stitched_video),
-                "-i", str(source_video),
-                "-map", "0:v:0",
-                "-map", "1:a:0?",
-                "-c:v", "copy",
-                "-c:a", "aac", "-shortest",
-                str(final_output)
-            )
-            return final_output
-        else:
-            run("ffmpeg", "-y", "-i", str(stitched_video), "-c:v", "copy", str(final_output))
-            return final_output
-    except Exception:
         run("ffmpeg", "-y", "-i", str(stitched_video), "-c:v", "copy", str(final_output))
         return final_output
 
@@ -393,12 +377,13 @@ def restore_audio_and_mux(source_video: Path | None, stitched_video: Path, final
                 str(final_output)
             )
             return final_output
+        else:
+            run("ffmpeg", "-y", "-i", str(stitched_video), "-c:v", "copy", str(final_output))
+            return final_output
     except Exception:
-        pass
-
-    if stitched_video.resolve() != final_output.resolve():
-        shutil.copy2(stitched_video, final_output)
-    return final_output
+        if stitched_video.resolve() != final_output.resolve():
+            shutil.copy2(stitched_video, final_output)
+        return final_output
 
 
 async def worker_connectivity() -> dict[str, Any]:
