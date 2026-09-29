@@ -1409,6 +1409,19 @@ async def process(
             await asyncio.sleep(0.4)
 
         restore_audio_and_mux(source_video=video, stitched_video=stitched_silent, final_output=final)
+        
+        # Immediate auto-cleanup of temporary chunks to keep SSD space completely free
+        try:
+            chunks_dir = output_dir / "chunks"
+            if chunks_dir.exists():
+                shutil.rmtree(chunks_dir, ignore_errors=True)
+            if stitched_silent.exists():
+                stitched_silent.unlink(missing_ok=True)
+            for anchor in output_dir.glob("anchor_char_*.jpg"):
+                anchor.unlink(missing_ok=True)
+        except Exception as clean_err:
+            print(f"Cleanup warning: {clean_err}", flush=True)
+
         update_job(job_id, stage="Completed", progress=100, complete=True, failed=False, final=str(final))
 
     except Exception as exc:
@@ -1473,13 +1486,16 @@ async def create_job(
     vp, cp, ap = None, None, None
     if video and video.filename:
         vp = directory / f"source{Path(video.filename).suffix.lower()}"
-        vp.write_bytes(await video.read())
+        with open(vp, "wb") as buffer:
+            shutil.copyfileobj(video.file, buffer)
     if character and character.filename:
         cp = directory / f"character{Path(character.filename).suffix.lower()}"
-        cp.write_bytes(await character.read())
+        with open(cp, "wb") as buffer:
+            shutil.copyfileobj(character.file, buffer)
     if audio and audio.filename:
         ap = directory / f"audio{Path(audio.filename).suffix.lower()}"
-        ap.write_bytes(await audio.read())
+        with open(ap, "wb") as buffer:
+            shutil.copyfileobj(audio.file, buffer)
     
     init_data = {
         "id": job_id,
