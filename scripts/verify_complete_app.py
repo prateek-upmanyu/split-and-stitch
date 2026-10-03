@@ -112,7 +112,7 @@ try:
     # 2. Poll Status
     print(f"  Polling progress for job {job_id}...")
     last_stage = ""
-    while True:
+    for _ in range(120):
         time.sleep(0.5)
         r_poll = httpx.get(f"{api_url}/api/jobs/{job_id}", timeout=5)
         p = r_poll.json()
@@ -121,6 +121,9 @@ try:
             last_stage = p.get("stage")
         if p.get("complete") or p.get("failed"):
             break
+    else:
+        raise TimeoutError("Pipeline verification timed out after 60 seconds")
+
 
     print(f"  Final Job State: complete={p.get('complete')}, progress={p.get('progress')}%")
     assert p.get("complete") is True
