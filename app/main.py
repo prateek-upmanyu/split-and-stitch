@@ -87,6 +87,53 @@ def read_job(job_id: str) -> dict[str, Any] | None:
     return None
 
 
+def cleanup_old_jobs(max_age_seconds: int = 3600) -> None:
+    """Removes job directories and job metadata files older than max_age_seconds (default 1 hour)."""
+    now = time.time()
+    for directory in [settings.storage_dir, Path(tempfile.gettempdir()) / "character_swap_jobs"]:
+        if not directory.exists():
+            continue
+        try:
+            for item in directory.iterdir():
+                try:
+                    if item.is_dir():
+                        mtime = item.stat().st_mtime
+                        if now - mtime > max_age_seconds:
+                            shutil.rmtree(item, ignore_errors=True)
+                            if item.name in jobs:
+                                jobs.pop(item.name, None)
+                    elif item.is_file() and item.name.startswith("job_") and item.name.endswith(".json"):
+                        mtime = item.stat().st_mtime
+                        if now - mtime > max_age_seconds:
+                            item.unlink(missing_ok=True)
+                            job_key = item.stem.replace("job_", "")
+                            if job_key in jobs:
+                                jobs.pop(job_key, None)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+@app.on_event("startup")
+async def schedule_periodic_cleanup():
+    # Immediate cleanup on startup
+    try:
+        cleanup_old_jobs(max_age_seconds=3600)
+    except Exception:
+        pass
+
+    async def _cleanup_loop():
+        while True:
+            await asyncio.sleep(600)  # Check every 10 minutes
+            try:
+                cleanup_old_jobs(max_age_seconds=3600)
+            except Exception as e:
+                print(f"Periodic cleanup error: {e}", flush=True)
+
+    asyncio.create_task(_cleanup_loop())
+
+
 def make_mock_badge(path: Path, text: str = "PROCESSED CHUNK", max_width: int = 420) -> Path:
     w = max(260, min(max_width, 480))
     h = 44

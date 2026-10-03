@@ -54,6 +54,7 @@ async function initApp() {
       }
       startBtn.disabled = false;
       banner.hidden = true;
+      checkAndResumeJob();
     } else {
       statusPill.className = 'status-pill error';
       statusText.textContent = 'Setup Needed';
@@ -67,6 +68,60 @@ async function initApp() {
     banner.innerHTML = '<strong>Connection Error:</strong> Could not connect to API server.';
     banner.hidden = false;
     startBtn.disabled = true;
+  }
+}
+
+// Check and restore active job if page was refreshed or re-opened
+async function checkAndResumeJob() {
+  let savedJobId = null;
+  try { savedJobId = localStorage.getItem('activeJobId'); } catch(e) {}
+  if (!savedJobId) return;
+
+  try {
+    const res = await fetch(`${API_BASE}/api/jobs/${savedJobId}`);
+    if (!res.ok) {
+      if (res.status === 404) {
+        try { localStorage.removeItem('activeJobId'); } catch(e) {}
+      }
+      return;
+    }
+    const job = await res.json();
+    jobId = savedJobId;
+
+    if (job.complete) {
+      const downloadUrl = `${API_BASE}/api/jobs/${jobId}/download`;
+      const resultVideo = $('result-video');
+      const downloadBtn = $('download-btn');
+
+      resultVideo.src = downloadUrl;
+      downloadBtn.href = downloadUrl;
+
+      $('progress-section').hidden = true;
+      $('result-section').hidden = false;
+      $('start-btn').disabled = false;
+      $('retry-wrap').hidden = true;
+    } else if (job.failed) {
+      const rawError = job.error || 'Generation failed previously';
+      const cleanError = rawError.replace(/<[^>]*>?/gm, '').replace(/&nbsp;/g, ' ').trim();
+      $('progress-section').hidden = false;
+      $('result-section').hidden = true;
+      $('stage-label').textContent = 'Generation Failed';
+      $('stage-detail').textContent = cleanError;
+      $('start-btn').disabled = false;
+      $('retry-wrap').hidden = false;
+    } else {
+      // In progress
+      $('progress-section').hidden = false;
+      $('result-section').hidden = true;
+      $('start-btn').disabled = true;
+      updateProgress(job.progress || 10, job.stage || 'Processing in background...', 'Resumed active background task');
+
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(pollJobStatus, 1500);
+      pollJobStatus();
+    }
+  } catch (err) {
+    console.warn('Could not check active background job:', err);
   }
 }
 
@@ -239,6 +294,7 @@ $('swap-form').addEventListener('submit', async e => {
     }
 
     jobId = jobData.id;
+    try { localStorage.setItem('activeJobId', jobId); } catch(e) {}
 
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollJobStatus, 1500);
@@ -256,7 +312,12 @@ async function pollJobStatus() {
 
   try {
     const res = await fetch(`${API_BASE}/api/jobs/${jobId}`);
-    if (!res.ok) return;
+    if (!res.ok) {
+      if (res.status === 404) {
+        try { localStorage.removeItem('activeJobId'); } catch(e) {}
+      }
+      return;
+    }
     const job = await res.json();
 
     const stage = job.stage || 'Processing...';
@@ -344,6 +405,7 @@ $('reset-btn').addEventListener('click', () => {
   $('retry-wrap').hidden = true;
   $('chunk-badge').hidden = true;
   jobId = null;
+  try { localStorage.removeItem('activeJobId'); } catch(e) {}
 });
 
 
