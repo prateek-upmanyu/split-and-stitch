@@ -40,6 +40,18 @@ class Settings(BaseSettings):
         None,
         validation_alias=AliasChoices("HF_TOKEN", "HUGGINGFACE_TOKEN", "HUGGING_FACE_HUB_TOKEN")
     )
+    magicapi_key: str | None = Field(
+        None,
+        validation_alias=AliasChoices("MAGICAPI_KEY", "MAGIC_API_KEY")
+    )
+    fal_key: str | None = Field(
+        None,
+        validation_alias=AliasChoices("FAL_KEY", "FAL_API_KEY")
+    )
+    replicate_api_token: str | None = Field(
+        None,
+        validation_alias=AliasChoices("REPLICATE_API_TOKEN", "REPLICATE_KEY")
+    )
     comfyui_url: str = Field(
         "http://127.0.0.1:8188",
         validation_alias=AliasChoices("COMFYUI_URL", "COMFY_URL")
@@ -66,3 +78,12 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Ensure loaded API tokens are synchronized to os.environ for external SDKs (replicate, fal_client)
+if settings.magicapi_key and not os.environ.get("MAGICAPI_KEY"):
+    os.environ["MAGICAPI_KEY"] = settings.magicapi_key
+if settings.fal_key and not os.environ.get("FAL_KEY"):
+    os.environ["FAL_KEY"] = settings.fal_key
+if settings.replicate_api_token and not os.environ.get("REPLICATE_API_TOKEN"):
+    os.environ["REPLICATE_API_TOKEN"] = settings.replicate_api_token
+

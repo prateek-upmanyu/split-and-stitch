@@ -28,10 +28,9 @@ async def upload_to_cdn(filepath: Path | str) -> str:
             return match.group(1)
         return url.replace("tmpfiles.org/", "tmpfiles.org/dl/")
 
+from contextlib import asynccontextmanager
 from typing import Any
-
-# Inject API token into environment
-
+import re
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
@@ -45,7 +44,44 @@ try:
 except ImportError:
     from .settings import ROOT, settings
 
-app = FastAPI(title="Split & Stitch API")
+VALID_JOB_ID_REGEX = re.compile(r"^[a-zA-Z0-9_\-]+$")
+
+
+def validate_job_id(job_id: str) -> str:
+    """Validates job ID to prevent path traversal and arbitrary filesystem access."""
+    if not job_id or not VALID_JOB_ID_REGEX.match(job_id):
+        raise HTTPException(status_code=400, detail="Invalid job ID format.")
+    return job_id
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Immediate cleanup on startup
+    try:
+        cleanup_old_jobs(max_age_seconds=3600)
+    except Exception:
+        pass
+
+    async def _cleanup_loop():
+        while True:
+            await asyncio.sleep(600)  # Check every 10 minutes
+            try:
+                cleanup_old_jobs(max_age_seconds=3600)
+            except Exception as e:
+                print(f"Periodic cleanup error: {e}", flush=True)
+
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(title="Split & Stitch API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -59,6 +95,8 @@ jobs: dict[str, dict[str, Any]] = {}
 
 
 def update_job(job_id: str, **kwargs: Any) -> dict[str, Any]:
+    if not VALID_JOB_ID_REGEX.match(job_id):
+        return {"id": job_id, "error": "Invalid job ID"}
     if job_id not in jobs:
         jobs[job_id] = read_job(job_id) or {"id": job_id}
     jobs[job_id].update(kwargs)
@@ -73,6 +111,8 @@ def update_job(job_id: str, **kwargs: Any) -> dict[str, Any]:
 
 
 def read_job(job_id: str) -> dict[str, Any] | None:
+    if not VALID_JOB_ID_REGEX.match(job_id):
+        return None
     if job_id in jobs:
         return jobs[job_id]
     for directory in [settings.storage_dir, Path(tempfile.gettempdir()) / "character_swap_jobs"]:
@@ -114,24 +154,6 @@ def cleanup_old_jobs(max_age_seconds: int = 3600) -> None:
         except Exception:
             pass
 
-
-@app.on_event("startup")
-async def schedule_periodic_cleanup():
-    # Immediate cleanup on startup
-    try:
-        cleanup_old_jobs(max_age_seconds=3600)
-    except Exception:
-        pass
-
-    async def _cleanup_loop():
-        while True:
-            await asyncio.sleep(600)  # Check every 10 minutes
-            try:
-                cleanup_old_jobs(max_age_seconds=3600)
-            except Exception as e:
-                print(f"Periodic cleanup error: {e}", flush=True)
-
-    asyncio.create_task(_cleanup_loop())
 
 
 def make_mock_badge(path: Path, text: str = "PROCESSED CHUNK", max_width: int = 420) -> Path:
@@ -284,6 +306,9 @@ def split_video_into_chunks(
         output_dir = video.parent / "chunks"
     output_dir.mkdir(parents=True, exist_ok=True)
     
+    if total_duration <= 0:
+        return []
+
     if total_duration <= max_chunk_duration:
         # If user capped duration shorter than original video, slice the target duration
         if max_total_duration and total_duration < meta["duration"]:
@@ -366,18 +391,21 @@ def stitch_video_chunks(chunk_paths: list[Path], output_path: Path, fps: float =
         manifest_lines.append(f"file '{escaped_p}'\n")
     concat_file.write_text("".join(manifest_lines), encoding="utf-8")
     
-    run(
-        "ffmpeg", "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", str(concat_file),
-        "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "18",
-        "-pix_fmt", "yuv420p",
-        "-r", f"{fps:.6f}",
-        str(output_path)
-    )
+    try:
+        run(
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file),
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-r", f"{fps:.6f}",
+            str(output_path)
+        )
+    finally:
+        concat_file.unlink(missing_ok=True)
     return output_path
 
 
@@ -394,14 +422,7 @@ def create_watermark(path: Path):
     d.text((w // 2, h // 2), "made with split & stitch", fill=(255, 255, 255, 230), anchor="mm")
     img.save(path)
     return path
-    w, h = 300, 40
-    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    d.rounded_rectangle([(0, 0), (w, h)], radius=20, fill=(0, 0, 0, 160))
-    # Standard text, since we can't guarantee an italic font exists on the server
-    d.text((w // 2, h // 2), "made with split & stitch", fill=(255, 255, 255, 230), anchor="mm")
-    img.save(path)
-    return path
+
 
 def restore_audio_and_mux(source_video: Path | None, stitched_video: Path, final_output: Path) -> Path:
     """Muxes audio from original source onto stitched video."""
@@ -727,8 +748,13 @@ async def generate_magicapi_faceswap(video: Path, character: Path, job_id: str |
         for _ in range(60):
             await asyncio.sleep(5)
             update_job(job_id, stage="MagicAPI FaceFusion Rendering...", progress=75)
-            s_resp = await client.get(f"https://api.magicapi.dev/api/v1/magicapi/faceswap-video-v3/status/{task_id}", headers={"x-api-market-key": api_key})
-            s_data = s_resp.json()
+            try:
+                s_resp = await client.get(f"https://api.magicapi.dev/api/v1/magicapi/faceswap-video-v3/status/{task_id}", headers={"x-api-market-key": api_key})
+                s_data = s_resp.json()
+            except Exception as poll_err:
+                print(f"Warning: MagicAPI status check transient error: {poll_err}", flush=True)
+                continue
+
             if s_data.get("status") == "COMPLETED" or s_data.get("status") == "succeeded":
                 result_url = s_data.get("result_url") or s_data.get("output_url") or s_data.get("url")
                 if not result_url and "output" in s_data:
@@ -808,7 +834,7 @@ async def generate_hf_sadtalker(
     target = target_dir / f"sadtalker_generated_{uuid.uuid4().hex[:6]}.mp4"
     
     # We call our system Python script that uses gradio_client to handle the massive queue natively.
-    script_path = Path("scripts/sadtalker_bridge.py")
+    script_path = ROOT / "scripts" / "sadtalker_bridge.py"
     if not script_path.exists():
         raise RuntimeError(f"Missing {script_path} for SadTalker")
         
@@ -1000,7 +1026,7 @@ async def generate_hf_liveportrait(
                     
                 }
             )
-        while True:
+        for _ in range(120):
             time.sleep(3)
             pred.reload()
             if pred.status == "succeeded":
@@ -1009,6 +1035,7 @@ async def generate_hf_liveportrait(
                 return str(out)
             elif pred.status in ("failed", "canceled"):
                 raise RuntimeError(f"Replicate failed with status: {pred.status}")
+        raise RuntimeError("Replicate Face Swap timed out after 6 minutes.")
 
     try:
         if job_id:
@@ -1111,13 +1138,14 @@ async def generate_replicate_animator(
                 }
             )
             
-        while True:
+        for _ in range(120):
             time.sleep(3)
             pred.reload()
             if pred.status == "succeeded":
                 return str(pred.output)
             elif pred.status in ("failed", "canceled"):
                 raise RuntimeError(f"Replicate Animator failed with status: {pred.status}")
+        raise RuntimeError("Replicate Animator timed out after 6 minutes.")
 
     try:
         import asyncio
@@ -1147,57 +1175,73 @@ async def generate_replicate_animator(
 
 
 async def upscale_video(video_path: Path, job_id: str) -> Path:
-    update_job(job_id, stage="Uploading for Upscale...", progress=91)
-    vid_url = await upload_to_cdn(video_path)
-    
-    update_job(job_id, stage="Upscaling Video (Enhancing)...", progress=93)
-    magic_key = settings.magicapi_key
-    
-    payload = {
-        "version": "c23768236472c41b7a121ee735c8073e29080c01b32907740cfada61bff75320",
-        "input": {
-            "video_path": vid_url,
-            "model": "RealESRGAN_x4plus",
-            "resolution": "FHD"
-        }
-    }
-    
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            "https://prod.api.market/api/v1/magicapi/video-upscaler-high-resolution-api/predictions",
-            headers={"x-api-market-key": magic_key},
-            json=payload
-        )
-        data = resp.json()
-        task_id = data.get("id")
+    magic_key = settings.magicapi_key or os.environ.get("MAGICAPI_KEY")
+    if not magic_key:
+        print("Upscale skipped: No MAGICAPI_KEY configured.", flush=True)
+        return video_path
+
+    try:
+        update_job(job_id, stage="Uploading for Upscale...", progress=91)
+        vid_url = await upload_to_cdn(video_path)
         
-        if not task_id:
-            print(f"Upscale failed: {data}")
-            return video_path
-            
-        for _ in range(120):
-            await asyncio.sleep(5)
-            s_resp = await client.get(
-                f"https://prod.api.market/api/v1/magicapi/video-upscaler-high-resolution-api/predictions/{task_id}",
-                headers={"x-api-market-key": magic_key}
+        update_job(job_id, stage="Upscaling Video (Enhancing)...", progress=93)
+        
+        payload = {
+            "version": "c23768236472c41b7a121ee735c8073e29080c01b32907740cfada61bff75320",
+            "input": {
+                "video_path": vid_url,
+                "model": "RealESRGAN_x4plus",
+                "resolution": "FHD"
+            }
+        }
+        
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                "https://prod.api.market/api/v1/magicapi/video-upscaler-high-resolution-api/predictions",
+                headers={"x-api-market-key": magic_key},
+                json=payload
             )
-            s_data = s_resp.json()
+            if resp.status_code != 200:
+                print(f"Upscale submission rejected: {resp.text}", flush=True)
+                return video_path
+            data = resp.json()
+            task_id = data.get("id")
             
-            if s_data.get("status") in ["succeeded", "COMPLETED"]:
-                result_url = s_data.get("output")
-                if result_url:
-                    update_job(job_id, stage="Downloading Upscaled Video...", progress=98)
-                    d_resp = await client.get(result_url, timeout=120.0)
-                    upscaled_path = video_path.with_name("final_upscaled.mp4")
-                    with open(upscaled_path, "wb") as f_out:
-                        f_out.write(d_resp.content)
-                    return upscaled_path
-                break
-            elif s_data.get("status") in ["failed", "FAILED"]:
-                print(f"Upscale worker failed: {s_data}")
-                break
+            if not task_id:
+                print(f"Upscale failed: {data}", flush=True)
+                return video_path
                 
-    return video_path
+            for _ in range(120):
+                await asyncio.sleep(5)
+                try:
+                    s_resp = await client.get(
+                        f"https://prod.api.market/api/v1/magicapi/video-upscaler-high-resolution-api/predictions/{task_id}",
+                        headers={"x-api-market-key": magic_key}
+                    )
+                    s_data = s_resp.json()
+                except Exception as poll_err:
+                    print(f"Upscale polling retry: {poll_err}", flush=True)
+                    continue
+                
+                if s_data.get("status") in ["succeeded", "COMPLETED"]:
+                    result_url = s_data.get("output")
+                    if result_url:
+                        update_job(job_id, stage="Downloading Upscaled Video...", progress=98)
+                        d_resp = await client.get(result_url, timeout=120.0)
+                        upscaled_path = video_path.with_name("final_upscaled.mp4")
+                        with open(upscaled_path, "wb") as f_out:
+                            f_out.write(d_resp.content)
+                        return upscaled_path
+                    break
+                elif s_data.get("status") in ["failed", "FAILED"]:
+                    print(f"Upscale worker failed: {s_data}", flush=True)
+                    break
+                    
+        return video_path
+    except Exception as e:
+        print(f"Upscaling encountered error, falling back to original video: {e}", flush=True)
+        return video_path
+
 
 async def process(
     job_id: str,
@@ -1288,6 +1332,8 @@ async def process(
             output_dir=output_dir / "chunks"
         )
         total_chunks = len(chunks)
+        if total_chunks == 0:
+            raise RuntimeError("No valid video chunks could be extracted from input video.")
 
         job_state = read_job(job_id) or {}
         chunk_outputs: list[dict[str, Any]] = job_state.get("chunk_outputs", [])
@@ -1519,18 +1565,26 @@ async def create_job(
         directory.mkdir(parents=True, exist_ok=True)
         
     vp, cp, ap = None, None, None
-    if video and video.filename:
-        vp = directory / f"source{Path(video.filename).suffix.lower()}"
-        with open(vp, "wb") as buffer:
-            shutil.copyfileobj(video.file, buffer)
-    if character and character.filename:
-        cp = directory / f"character{Path(character.filename).suffix.lower()}"
-        with open(cp, "wb") as buffer:
-            shutil.copyfileobj(character.file, buffer)
-    if audio and audio.filename:
-        ap = directory / f"audio{Path(audio.filename).suffix.lower()}"
-        with open(ap, "wb") as buffer:
-            shutil.copyfileobj(audio.file, buffer)
+    try:
+        if video and video.filename:
+            vp = directory / f"source{Path(video.filename).suffix.lower()}"
+            with open(vp, "wb") as buffer:
+                shutil.copyfileobj(video.file, buffer)
+        if character and character.filename:
+            cp = directory / f"character{Path(character.filename).suffix.lower()}"
+            with open(cp, "wb") as buffer:
+                shutil.copyfileobj(character.file, buffer)
+        if audio and audio.filename:
+            ap = directory / f"audio{Path(audio.filename).suffix.lower()}"
+            with open(ap, "wb") as buffer:
+                shutil.copyfileobj(audio.file, buffer)
+    finally:
+        if video:
+            await video.close()
+        if character:
+            await character.close()
+        if audio:
+            await audio.close()
     
     init_data = {
         "id": job_id,
@@ -1561,6 +1615,7 @@ async def create_job(
 
 @app.post("/api/jobs/{job_id}/retry")
 async def retry_job(job_id: str, background: BackgroundTasks):
+    validate_job_id(job_id)
     job = read_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -1592,6 +1647,7 @@ async def retry_job(job_id: str, background: BackgroundTasks):
 
 @app.get("/api/jobs/{job_id}")
 async def get_job(job_id: str):
+    validate_job_id(job_id)
     job = read_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
@@ -1599,8 +1655,10 @@ async def get_job(job_id: str):
 
 @app.get("/api/jobs/{job_id}/download")
 async def download(job_id: str):
+    validate_job_id(job_id)
     job = read_job(job_id)
     path = Path(job.get("final", "")) if job else None
     if not path or not path.exists():
         raise HTTPException(404, "Final video is not ready")
     return FileResponse(path, media_type="video/mp4", filename="final_character_swap.mp4")
+

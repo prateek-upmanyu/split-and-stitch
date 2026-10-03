@@ -394,6 +394,10 @@ $('retry-btn').addEventListener('click', async () => {
 
 // Reset Handler
 $('reset-btn').addEventListener('click', () => {
+  if (pollInterval) {
+    clearInterval(pollInterval);
+    pollInterval = null;
+  }
   $('swap-form').reset();
   $('video-placeholder').hidden = false;
   $('video-preview-wrap').hidden = true;
