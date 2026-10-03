@@ -48,6 +48,14 @@ def test_download_not_ready():
     response = client.get("/api/jobs/non_existent_job_12345/download")
     assert response.status_code == 404
 
+def test_download_incomplete_job_with_empty_final():
+    job_id = "test_incomplete_job_999"
+    jobs[job_id] = {"id": job_id, "stage": "Processing", "complete": False, "final": ""}
+    response = client.get(f"/api/jobs/{job_id}/download")
+    assert response.status_code == 404
+    jobs.pop(job_id, None)
+
+
 def test_cleanup_old_jobs():
     # Create a temporary fake old job directory and file
     temp_dir = Path(tempfile.gettempdir()) / "character_swap_jobs"

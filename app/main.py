@@ -1657,8 +1657,12 @@ async def get_job(job_id: str):
 async def download(job_id: str):
     validate_job_id(job_id)
     job = read_job(job_id)
-    path = Path(job.get("final", "")) if job else None
-    if not path or not path.exists():
+    final_str = (job.get("final") or "").strip() if job else ""
+    if not final_str:
+        raise HTTPException(404, "Final video is not ready")
+    path = Path(final_str)
+    if not path.is_file():
         raise HTTPException(404, "Final video is not ready")
     return FileResponse(path, media_type="video/mp4", filename="final_character_swap.mp4")
+
 
