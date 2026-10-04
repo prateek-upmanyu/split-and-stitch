@@ -1518,6 +1518,14 @@ async def process(
 async def home():
     return (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
 
+@app.get("/style.css")
+async def get_style_css():
+    return FileResponse(ROOT / "app" / "static" / "style.css", media_type="text/css")
+
+@app.get("/app.js")
+async def get_app_js():
+    return FileResponse(ROOT / "app" / "static" / "app.js", media_type="application/javascript")
+
 @app.get("/api/preflight")
 async def get_preflight():
     return await preflight()
@@ -1654,6 +1662,7 @@ async def get_job(job_id: str):
     return job
 
 @app.get("/api/jobs/{job_id}/download")
+@app.head("/api/jobs/{job_id}/download")
 async def download(job_id: str):
     validate_job_id(job_id)
     job = read_job(job_id)

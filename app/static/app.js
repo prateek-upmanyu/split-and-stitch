@@ -74,7 +74,13 @@ async function initApp() {
 // Check and restore active job if page was refreshed or re-opened
 async function checkAndResumeJob() {
   let savedJobId = null;
-  try { savedJobId = localStorage.getItem('activeJobId'); } catch(e) {}
+  const urlParam = new URLSearchParams(window.location.search).get('job');
+  if (urlParam) {
+    savedJobId = urlParam;
+    try { localStorage.setItem('activeJobId', savedJobId); } catch(e) {}
+  } else {
+    try { savedJobId = localStorage.getItem('activeJobId'); } catch(e) {}
+  }
   if (!savedJobId) return;
 
   try {
@@ -100,6 +106,7 @@ async function checkAndResumeJob() {
       $('result-section').hidden = false;
       $('start-btn').disabled = false;
       $('retry-wrap').hidden = true;
+      $('result-section').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     } else if (job.failed) {
       const rawError = job.error || 'Generation failed previously';
       const cleanError = rawError.replace(/<[^>]*>?/gm, '').replace(/&nbsp;/g, ' ').trim();
@@ -114,7 +121,8 @@ async function checkAndResumeJob() {
       $('progress-section').hidden = false;
       $('result-section').hidden = true;
       $('start-btn').disabled = true;
-      updateProgress(job.progress || 10, job.stage || 'Processing in background...', 'Resumed active background task');
+      const chunkText = (job.total_chunks && job.total_chunks > 1) ? `Chunk ${job.current_chunk || 1}/${job.total_chunks}` : null;
+      updateProgress(job.progress || 10, job.stage || 'Processing in background...', 'Resumed active background task', chunkText);
 
       if (pollInterval) clearInterval(pollInterval);
       pollInterval = setInterval(pollJobStatus, 1500);
@@ -276,25 +284,61 @@ $('swap-form').addEventListener('submit', async e => {
     formData.append('video', videoFile);
     formData.append('character', charFile);
 
-    updateProgress(35, 'Starting Task...', 'Registering generation job for automatic chunk processing');
+    const totalBytes = (videoFile.size || 0) + (charFile.size || 0);
+    const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
 
-    const res = await fetch(API_BASE + '/api/jobs', { method: 'POST', body: formData });
-    const rawText = await res.text();
-    let jobData = null;
-    try {
-      jobData = JSON.parse(rawText);
-    } catch (parseErr) {
-      const cleanMsg = rawText.replace(/<[^>]*>?/gm, '').trim();
-      throw new Error(cleanMsg || `Server returned status ${res.status}`);
-    }
+    updateProgress(1, 'Uploading Media (0%)...', `Transferred 0.0 MB of ${totalMB} MB. Please keep this tab open.`);
 
-    if (!res.ok) {
-      const errorMsg = jobData?.detail?.message || jobData?.detail || jobData?.error || `Request failed with status ${res.status}`;
-      throw new Error(errorMsg);
-    }
+    const jobData = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable) {
+          const percent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+          const loadedMB = (evt.loaded / (1024 * 1024)).toFixed(1);
+          const uploadTotalMB = (evt.total / (1024 * 1024)).toFixed(1);
+          updateProgress(
+            percent,
+            `Uploading Media (${percent}%)...`,
+            `Transferred ${loadedMB} MB of ${uploadTotalMB} MB. Please keep this tab open.`
+          );
+        }
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            resolve(JSON.parse(xhr.responseText));
+          } catch (err) {
+            reject(new Error("Invalid response format from server"));
+          }
+        } else {
+          try {
+            const errData = JSON.parse(xhr.responseText);
+            const msg = errData?.detail?.message || errData?.detail || errData?.error || `Upload failed with status ${xhr.status}`;
+            reject(new Error(msg));
+          } catch (e) {
+            const cleanText = xhr.responseText.replace(/<[^>]*>?/gm, '').trim();
+            reject(new Error(cleanText || `Server returned status ${xhr.status}`));
+          }
+        }
+      };
+
+      xhr.onerror = () => reject(new Error("Network connection error during upload. Please check your internet connection."));
+      xhr.onabort = () => reject(new Error("Upload aborted."));
+
+      xhr.open('POST', API_BASE + '/api/jobs');
+      xhr.send(formData);
+    });
 
     jobId = jobData.id;
     try { localStorage.setItem('activeJobId', jobId); } catch(e) {}
+
+    updateProgress(
+      10,
+      'Job Started & Registered!',
+      'Media uploaded successfully. Video is processing in background. You can now safely switch tabs or minimize browser.'
+    );
 
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(pollJobStatus, 1500);
@@ -328,8 +372,13 @@ async function pollJobStatus() {
     else if (stage.includes('Extracting')) detail = 'Separating original audio track';
     else if (stage.includes('Restoring')) detail = 'Muxing original audio back onto generated video';
     else if (stage.includes('Face Swapping')) detail = 'AI model is mapping character features to video frames';
+    else if (stage.includes('Stitching')) detail = 'Merging all processed video chunks together';
+    else if (job.total_chunks && job.total_chunks > 1) {
+      detail = `Processing chunk ${job.current_chunk || 1} of ${job.total_chunks} (${job.total_duration ? job.total_duration.toFixed(1) + 's total' : ''})`;
+    }
 
-    updateProgress(progress, stage, detail);
+    const chunkText = (job.total_chunks && job.total_chunks > 1) ? `Chunk ${job.current_chunk || 1}/${job.total_chunks}` : null;
+    updateProgress(progress, stage, detail, chunkText);
 
     if (job.failed) {
       clearInterval(pollInterval);
@@ -356,19 +405,28 @@ async function pollJobStatus() {
       $('result-section').hidden = false;
       $('start-btn').disabled = false;
       $('retry-wrap').hidden = true;
+      $('result-section').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
   } catch (err) {
     console.error('Polling error:', err);
   }
 }
 
-function updateProgress(percent, stageText, detailText) {
+function updateProgress(percent, stageText, detailText, chunkText) {
   $('progress-bar').style.width = `${percent}%`;
   $('progress-percent').textContent = `${percent}%`;
   $('stage-label').textContent = stageText;
   if (detailText) $('stage-detail').textContent = detailText;
-  
-  $('chunk-badge').hidden = true;
+
+  const chunkBadge = $('chunk-badge');
+  if (chunkBadge) {
+    if (chunkText) {
+      chunkBadge.textContent = chunkText;
+      chunkBadge.hidden = false;
+    } else {
+      chunkBadge.hidden = true;
+    }
+  }
 }
 
 // Retry Handler
