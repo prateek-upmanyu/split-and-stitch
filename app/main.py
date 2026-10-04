@@ -334,6 +334,29 @@ def split_video_into_chunks(
                 "path": chunk_path,
                 "is_original": False
             }]
+        if video.suffix.lower() != ".mp4":
+            chunk_path = output_dir / "chunk_001.mp4"
+            run(
+                "ffmpeg", "-y",
+                "-ss", "0.0",
+                "-i", str(video),
+                "-t", f"{total_duration:.6f}",
+                "-avoid_negative_ts", "make_zero",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-r", f"{fps:.6f}",
+                "-pix_fmt", "yuv420p",
+                "-an",
+                str(chunk_path)
+            )
+            return [{
+                "index": 1,
+                "start": 0.0,
+                "duration": total_duration,
+                "path": chunk_path,
+                "is_original": False
+            }]
         return [{
             "index": 1,
             "start": 0.0,
