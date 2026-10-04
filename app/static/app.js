@@ -153,6 +153,7 @@ function setupDropzones() {
   videoInput.addEventListener('change', e => {
     const file = e.target.files[0];
     if (file) {
+      activeVideoFile = file;
       const url = URL.createObjectURL(file);
       videoThumb.src = url;
       videoThumb.onloadedmetadata = () => {
@@ -173,11 +174,10 @@ function setupDropzones() {
   });
 
   // Character drop & change
-
-
   charInput.addEventListener('change', e => {
     const file = e.target.files[0];
     if (file) {
+      activeCharacterFile = file;
       const reader = new FileReader();
       reader.onload = ev => {
         const dataUrl = ev.target.result;
@@ -209,7 +209,8 @@ function setupDropzones() {
       if (saved) {
           try {
               const blob = dataURLtoBlob(saved);
-              setCharacterPreview(blob, saved, null);
+              const file = new File([blob], "saved_profile_face.jpg", { type: "image/jpeg" });
+              setCharacterPreview(file, saved, "Saved Profile Face");
           } catch(e) {}
       }
   });
@@ -259,8 +260,8 @@ function setupDropzones() {
 $('swap-form').addEventListener('submit', async e => {
   e.preventDefault();
 
-  const videoFile = $('video-input').files[0];
-  const charFile = $('character-input').files[0];
+  const videoFile = activeVideoFile || $('video-input').files[0];
+  const charFile = activeCharacterFile || $('character-input').files[0];
   const duration = $('duration-select').value;
 
   if (!videoFile || !charFile) {
@@ -467,6 +468,8 @@ $('reset-btn').addEventListener('click', () => {
   $('retry-wrap').hidden = true;
   $('chunk-badge').hidden = true;
   jobId = null;
+  activeVideoFile = null;
+  activeCharacterFile = null;
   try { localStorage.removeItem('activeJobId'); } catch(e) {}
 });
 
@@ -622,28 +625,54 @@ $('record-video-btn').addEventListener('click', async (e) => {
 
 
 function setVideoPreview(file, dataUrl, filename) {
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    $('video-input').files = dt.files;
+    let validFile = file;
+    if (!(validFile instanceof File)) {
+        try {
+            validFile = new File([file], filename || "recorded-video.webm", { type: (file && file.type) || "video/webm" });
+        } catch (e) {
+            validFile = file;
+        }
+    }
+    activeVideoFile = validFile;
+
+    try {
+        const dt = new DataTransfer();
+        dt.items.add(validFile);
+        $('video-input').files = dt.files;
+    } catch(e) {}
     $('video-input').dispatchEvent(new Event('change'));
 }
 
 function setCharacterPreview(file, dataUrl, filename) {
+    let validFile = file;
+    if (!(validFile instanceof File)) {
+        try {
+            validFile = new File([file], filename || "saved_face.jpg", { type: (file && file.type) || "image/jpeg" });
+        } catch (e) {
+            validFile = file;
+        }
+    }
+    activeCharacterFile = validFile;
+
     // 1. Update UI
     document.getElementById('character-thumb').src = dataUrl;
     document.getElementById('character-filename').textContent = filename || "Saved Profile Face";
     document.getElementById('character-placeholder').hidden = true;
     document.getElementById('character-preview-wrap').hidden = false;
 
-    // 2. Attach to the hidden HTML form properly without infinite loops
-    const input = document.getElementById('character-input');
-    const dt = new DataTransfer();
-    dt.items.add(file);
-    input.files = dt.files;
+    // 2. Attach to the hidden HTML form properly without crashing on mobile Safari
+    try {
+        const input = document.getElementById('character-input');
+        const dt = new DataTransfer();
+        dt.items.add(validFile);
+        input.files = dt.files;
+    } catch(e) {}
 }
+
 document.getElementById('remove-video-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
+    activeVideoFile = null;
     document.getElementById('video-input').value = '';
     document.getElementById('video-placeholder').hidden = false;
     document.getElementById('video-preview-wrap').hidden = true;
@@ -652,6 +681,7 @@ document.getElementById('remove-video-btn').addEventListener('click', (e) => {
 document.getElementById('remove-char-btn').addEventListener('click', (e) => {
     e.stopPropagation();
     e.preventDefault();
+    activeCharacterFile = null;
     document.getElementById('character-input').value = '';
     try { localStorage.removeItem('savedProfileFace'); } catch(err) {}
     document.getElementById('character-placeholder').hidden = false;
