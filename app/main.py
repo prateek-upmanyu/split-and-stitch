@@ -415,18 +415,30 @@ def stitch_video_chunks(chunk_paths: list[Path], output_path: Path, fps: float =
     concat_file.write_text("".join(manifest_lines), encoding="utf-8")
     
     try:
-        run(
-            "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", str(concat_file),
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
-            "-pix_fmt", "yuv420p",
-            "-r", f"{fps:.6f}",
-            str(output_path)
-        )
+        try:
+            # Ultra-fast stream copy (instant stitching in < 0.5s)
+            run(
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_file),
+                "-c:v", "copy",
+                str(output_path)
+            )
+        except Exception:
+            # Fallback to re-encode if stream copy cannot be used
+            run(
+                "ffmpeg", "-y",
+                "-f", "concat",
+                "-safe", "0",
+                "-i", str(concat_file),
+                "-c:v", "libx264",
+                "-preset", "veryfast",
+                "-crf", "18",
+                "-pix_fmt", "yuv420p",
+                "-r", f"{fps:.6f}",
+                str(output_path)
+            )
     finally:
         concat_file.unlink(missing_ok=True)
     return output_path
@@ -1600,15 +1612,15 @@ async def create_job(
         if video and video.filename:
             vp = directory / f"source{Path(video.filename).suffix.lower()}"
             with open(vp, "wb") as buffer:
-                shutil.copyfileobj(video.file, buffer)
+                shutil.copyfileobj(video.file, buffer, length=1024 * 1024)
         if character and character.filename:
             cp = directory / f"character{Path(character.filename).suffix.lower()}"
             with open(cp, "wb") as buffer:
-                shutil.copyfileobj(character.file, buffer)
+                shutil.copyfileobj(character.file, buffer, length=1024 * 1024)
         if audio and audio.filename:
             ap = directory / f"audio{Path(audio.filename).suffix.lower()}"
             with open(ap, "wb") as buffer:
-                shutil.copyfileobj(audio.file, buffer)
+                shutil.copyfileobj(audio.file, buffer, length=1024 * 1024)
     finally:
         if video:
             await video.close()

@@ -295,15 +295,31 @@ $('swap-form').addEventListener('submit', async e => {
 
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable) {
-          const percent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+          const rawPercent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
           const loadedMB = (evt.loaded / (1024 * 1024)).toFixed(1);
           const uploadTotalMB = (evt.total / (1024 * 1024)).toFixed(1);
-          updateProgress(
-            percent,
-            `Uploading Media (${percent}%)...`,
-            `Transferred ${loadedMB} MB of ${uploadTotalMB} MB. Please keep this tab open.`
-          );
+          if (rawPercent >= 99) {
+            updateProgress(
+              99,
+              'Processing Upload on Server...',
+              `Transferred all ${uploadTotalMB} MB! Server is saving files and initializing task...`
+            );
+          } else {
+            updateProgress(
+              rawPercent,
+              `Uploading Media (${rawPercent}%)...`,
+              `Transferred ${loadedMB} MB of ${uploadTotalMB} MB. Please keep this tab open.`
+            );
+          }
         }
+      };
+
+      xhr.upload.onload = () => {
+        updateProgress(
+          100,
+          'Upload Complete! Starting AI Engine...',
+          'All files received by cloud server. Initializing chunk slicing & AI face fusion...'
+        );
       };
 
       xhr.onload = () => {
