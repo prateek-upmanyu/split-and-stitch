@@ -292,23 +292,50 @@ $('swap-form').addEventListener('submit', async e => {
 
     const jobData = await new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
+      const uploadStartTime = Date.now();
+      let lastLoaded = 0;
+      let lastTime = uploadStartTime;
+      let currentSpeed = 0;
 
       xhr.upload.onprogress = (evt) => {
         if (evt.lengthComputable) {
-          const rawPercent = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+          const now = Date.now();
+          const timeDiff = (now - lastTime) / 1000;
+          if (timeDiff >= 0.5) {
+            currentSpeed = (evt.loaded - lastLoaded) / timeDiff;
+            lastLoaded = evt.loaded;
+            lastTime = now;
+          }
+
           const loadedMB = (evt.loaded / (1024 * 1024)).toFixed(1);
           const uploadTotalMB = (evt.total / (1024 * 1024)).toFixed(1);
-          if (rawPercent >= 99) {
+          const rawPercent = Math.min(100, Math.floor((evt.loaded / evt.total) * 100));
+
+          let speedText = '';
+          let etaText = '';
+          if (currentSpeed > 0 && evt.loaded < evt.total) {
+            const speedMB = (currentSpeed / (1024 * 1024)).toFixed(1);
+            speedText = ` • ${speedMB} MB/s`;
+            const remainingBytes = evt.total - evt.loaded;
+            const remainingSecs = Math.max(1, Math.round(remainingBytes / currentSpeed));
+            if (remainingSecs < 60) {
+              etaText = ` • ~${remainingSecs}s left`;
+            } else {
+              etaText = ` • ~${Math.round(remainingSecs / 60)}m left`;
+            }
+          }
+
+          if (rawPercent >= 100 || evt.loaded >= evt.total) {
             updateProgress(
-              99,
-              'Processing Upload on Server...',
-              `Transferred all ${uploadTotalMB} MB! Server is saving files and initializing task...`
+              100,
+              'Upload Complete! Starting AI Engine...',
+              `Transferred all ${uploadTotalMB} MB! Server is initializing chunk slicing & AI face fusion...`
             );
           } else {
             updateProgress(
               rawPercent,
               `Uploading Media (${rawPercent}%)...`,
-              `Transferred ${loadedMB} MB of ${uploadTotalMB} MB. Please keep this tab open.`
+              `Transferred ${loadedMB} MB of ${uploadTotalMB} MB${speedText}${etaText}. Please keep tab open.`
             );
           }
         }
